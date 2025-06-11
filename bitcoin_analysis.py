@@ -1,14 +1,47 @@
 import pandas as pd 
-from datetime import timedelta
+from datetime import timedelta, datetime
 import tweetnlp
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, r2_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import TimeSeriesSplit
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 import warnings
+import yfinance as yf  # Per scaricare dati Bitcoin reali
 warnings.filterwarnings('ignore')
+
+def download_bitcoin_prices(start_date, end_date):
+    """Scarica i prezzi storici di Bitcoin da Yahoo Finance"""
+    try:
+        print(f"Scaricando prezzi Bitcoin dal {start_date} al {end_date}...")
+        
+        # Scarica dati Bitcoin
+        btc_data = yf.download('BTC-USD', start=start_date, end=end_date, progress=False)
+        
+        if btc_data.empty:
+            print("Nessun dato scaricato")
+            return None
+        
+        # Prepara DataFrame
+        btc_data = btc_data.reset_index()  # resetta l'indice, porta la colonna 'Date' nel dataframe
+        btc_data.columns = ['_'.join(col).strip() for col in btc_data.columns.values]
+        print(btc_data.columns)
+
+        btc_prices = pd.DataFrame({
+            'date': btc_data['Date_'],
+            'price': btc_data['Close_BTC-USD']
+        })
+        
+        print(f"Scaricati {len(btc_prices)} giorni di prezzi")
+        print(f"Range: ${btc_prices['price'].min():.2f} - ${btc_prices['price'].max():.2f}")
+        
+        return btc_prices
+        
+    except Exception as e:
+        print(f"Errore nel download: {e}")
+        print("Assicurati di avere installato yfinance: pip install yfinance")
+        return None
 
 def load_and_clean_data(file_path):
     """Carica e pulisce il dataset"""
@@ -22,7 +55,7 @@ def load_and_clean_data(file_path):
             for sep in separators:
                 try:
                     df = pd.read_csv(file_path, sep=sep, encoding=encoding)
-                    if len(df.columns) >= 3:  # Verifica che abbia almeno 3 colonne
+                    if len(df.columns) >= 3:
                         print(f"Dataset caricato con encoding={encoding}, sep='{sep}'")
                         break
                 except:
@@ -31,285 +64,370 @@ def load_and_clean_data(file_path):
                 break
         
         if df is None:
-            raise Exception("Impossibile caricare il dataset con i parametri testati")
+            raise Exception("Impossibile caricare il dataset")
         
-        # Assegna nomi colonne se necessario
+        # Assegna nomi colonne
         if len(df.columns) >= 3:
             df.columns = ['timestamp', 'text', 'btc_price'] + list(df.columns[3:])
-        else:
-            raise Exception("Il dataset deve avere almeno 3 colonne")
         
-        # Pulizia valori numerici del prezzo BTC
-        if df['btc_price'].dtype == 'object':
-            df['btc_price'] = df['btc_price'].astype(str).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
-        df['btc_price'] = pd.to_numeric(df['btc_price'], errors='coerce')
+        # Pulizia timestamp
+        df['timestamp'] = pd.to_datetime(df['timestamp'], dayfirst=True, errors='coerce')
+        df['date'] = df['timestamp'].dt.date
         
-        # Conversione timestamp con multiple format
-        timestamp_formats = ['%d/%m/%Y %H:%M', '%Y-%m-%d %H:%M:%S', '%d-%m-%Y %H:%M', '%Y/%m/%d %H:%M']
-        df['timestamp'] = None
+        # Pulizia testo
+        df['text'] = df['text'].astype(str)
         
-        for fmt in timestamp_formats:
-            try:
-                df['timestamp'] = pd.to_datetime(df['timestamp'], format=fmt, errors='coerce')
-                if df['timestamp'].notna().sum() > 0:
-                    break
-            except:
-                continue
+        # Rimuovi righe invalide
+        df = df.dropna(subset=['timestamp', 'text'])
+        df = df.sort_values('timestamp').reset_index(drop=True)
         
-        # Se ancora non funziona, prova inference automatica
-        if df['timestamp'].isna().all():
-            df['timestamp'] = pd.to_datetime(df['timestamp'], dayfirst=True, errors='coerce')
-        
-        # Rimuovi righe con valori mancanti
-        initial_len = len(df)
-        df = df.dropna(subset=['timestamp', 'text', 'btc_price'])
-        
-        print(f"Dataset caricato: {len(df)} righe valide su {initial_len} totali")
+        print(f"Dataset caricato: {len(df)} righe")
         print(f"Range temporale: {df['timestamp'].min()} - {df['timestamp'].max()}")
+        
         return df
         
     except Exception as e:
-        print(f"Errore nel caricamento del dataset: {e}")
+        print(f"Errore caricamento: {e}")
         return None
 
 def perform_sentiment_analysis(df):
-    """Esegue l'analisi del sentiment sui tweet"""
-    print("Iniziando analisi del sentiment...")
+    """Analisi sentiment con fallback semplificato"""
+    print("Analizzando sentiment...")
     
     try:
-        # Inizializza il modello di sentiment
-        model = tweetnlp.load_model('sentiment') 
-    except Exception as e:
-        print(f"Errore nel caricamento del modello tweetnlp: {e}")
-        print("Usando sentiment analysis semplificata basata su parole chiave...")
-        return perform_simple_sentiment_analysis(df)
+        # Prova tweetnlp
+        model = tweetnlp.load_model('sentiment')
+        use_tweetnlp = True
+    except:
+        print("tweetnlp non disponibile, uso analisi semplificata")
+        use_tweetnlp = False
     
-    # Analizza il sentiment per ogni tweet
     sentiments = []
-    for i, text in enumerate(df['text']):
-        try:
-            # Converti a stringa e gestisci testi vuoti
-            text_str = str(text).strip()
-            if not text_str or text_str.lower() in ['nan', 'none', '']:
+    
+    if use_tweetnlp:
+        for i, text in enumerate(df['text']):
+            try:
+                result = model.predict(str(text))
+                sentiments.append(result['label'])
+            except:
                 sentiments.append('neutral')
-                continue
-                
-            result = model.predict(text_str)
-            sentiments.append(result['label'])
             
             if (i + 1) % 100 == 0:
                 print(f"Processati {i + 1}/{len(df)} tweet")
-                
-        except Exception as e:
-            print(f"Errore nell'analisi del tweet {i}: {e}")
-            sentiments.append('neutral')  # Default fallback
-    
-    df['sentiment'] = sentiments
-    
-    # Mappatura a numeri: positive = 1, neutral = 0, negative = -1
-    sentiment_map = {'positive': 1, 'neutral': 0, 'negative': -1}
-    df['sentiment_score'] = df['sentiment'].map(sentiment_map).fillna(0)
-    
-    print("Analisi del sentiment completata!")
-    print(f"Distribuzione sentiment: {df['sentiment'].value_counts().to_dict()}")
-    return df
-
-def perform_simple_sentiment_analysis(df):
-    """Sentiment analysis semplificata basata su parole chiave"""
-    positive_words = ['good', 'great', 'buy', 'bull', 'moon', 'rise', 'up', 'profit', 'gain']
-    negative_words = ['bad', 'sell', 'bear', 'crash', 'down', 'loss', 'drop', 'fall']
-    
-    sentiments = []
-    for text in df['text']:
-        text_str = str(text).lower()
-        pos_count = sum(1 for word in positive_words if word in text_str)
-        neg_count = sum(1 for word in negative_words if word in text_str)
+    else:
+        # Analisi semplificata
+        positive_words = ['good', 'great', 'buy', 'bull', 'moon', 'rise', 'up', 'profit', 'gain', 'bullish']
+        negative_words = ['bad', 'sell', 'bear', 'crash', 'down', 'loss', 'drop', 'fall', 'bearish']
         
-        if pos_count > neg_count:
-            sentiments.append('positive')
-        elif neg_count > pos_count:
-            sentiments.append('negative')
-        else:
-            sentiments.append('neutral')
+        for text in df['text']:
+            text_lower = str(text).lower()
+            pos_count = sum(1 for word in positive_words if word in text_lower)
+            neg_count = sum(1 for word in negative_words if word in text_lower)
+            
+            if pos_count > neg_count:
+                sentiments.append('positive')
+            elif neg_count > pos_count:
+                sentiments.append('negative')
+            else:
+                sentiments.append('neutral')
     
     df['sentiment'] = sentiments
+    
+    # Mappa a score numerici
     sentiment_map = {'positive': 1, 'neutral': 0, 'negative': -1}
     df['sentiment_score'] = df['sentiment'].map(sentiment_map)
     
+    print(f"Sentiment analizzato: {df['sentiment'].value_counts().to_dict()}")
     return df
 
-def create_prediction_features(df, horizon_days=10):
-    """Crea le features per la previsione del prezzo futuro"""
-    # Ordina per timestamp
-    df = df.sort_values('timestamp').reset_index(drop=True)
+def create_daily_features(df):
+    """Aggrega i dati per giorno e crea features"""
+    # Aggrega per giorno
+    daily_data = df.groupby('date').agg({
+        'sentiment_score': ['mean', 'std', 'count'],
+        'text': 'count'
+    }).reset_index()
     
-    # CORREZIONE IMPORTANTE: Per evitare data leakage, usiamo solo dati passati
-    # Invece di predire il prezzo futuro, prediciamo la direzione del prezzo
-    df['price_change_1d'] = df['btc_price'].pct_change(periods=1)
-    df['price_change_7d'] = df['btc_price'].pct_change(periods=7)
+    # Flatten column names
+    daily_data.columns = ['date', 'sentiment_mean', 'sentiment_std', 'sentiment_count', 'tweet_count']
+    daily_data['sentiment_std'] = daily_data['sentiment_std'].fillna(0)
+    
+    # Aggiungi features temporali
+    daily_data['date'] = pd.to_datetime(daily_data['date'])
+    daily_data['day_of_week'] = daily_data['date'].dt.dayofweek
+    daily_data['is_weekend'] = daily_data['day_of_week'].isin([5, 6]).astype(int)
     
     # Media mobile del sentiment
-    df['sentiment_ma_3'] = df['sentiment_score'].rolling(window=3, min_periods=1).mean()
-    df['sentiment_ma_7'] = df['sentiment_score'].rolling(window=7, min_periods=1).mean()
+    daily_data = daily_data.sort_values('date')
+    daily_data['sentiment_ma_3'] = daily_data['sentiment_mean'].rolling(3, min_periods=1).mean()
+    daily_data['sentiment_ma_7'] = daily_data['sentiment_mean'].rolling(7, min_periods=1).mean()
     
-    # Volatilità del prezzo
-    df['price_volatility'] = df['btc_price'].rolling(window=7, min_periods=1).std()
-    
-    # Target: variazione del prezzo nei prossimi giorni (per validazione)
-    # NOTA: Questo va usato solo per test, non per training in produzione
-    df['future_price_change'] = df['btc_price'].pct_change(periods=-horizon_days)
-    df['future_direction'] = (df['future_price_change'] > 0).astype(int)
-    
-    # Rimuovi righe con valori mancanti per il training
-    df_clean = df.dropna(subset=['sentiment_score', 'price_change_1d', 'future_price_change'])
-    
-    print(f"Features create per {len(df_clean)} osservazioni")
-    return df_clean
+    print(f"Dati aggregati per {len(daily_data)} giorni")
+    return daily_data
 
-def train_regression_model(df):
-    """Addestra il modello di regressione lineare"""
-    # Caratteristiche: usa solo dati passati
-    feature_cols = ['sentiment_score', 'sentiment_ma_3', 'sentiment_ma_7', 
-                   'price_change_1d', 'price_change_7d', 'price_volatility']
+def merge_with_real_prices(daily_data, real_prices):
+    """Unisce i dati sentiment con i prezzi reali di Bitcoin"""
+    # Assicurati che le date siano dello stesso tipo
+    daily_data['date'] = pd.to_datetime(daily_data['date'])
+    real_prices['date'] = pd.to_datetime(real_prices['date'])
     
-    # Rimuovi feature con tutti NaN
-    available_features = [col for col in feature_cols if col in df.columns and not df[col].isna().all()]
+    # Merge dei dati
+    merged_data = pd.merge(daily_data, real_prices, on='date', how='inner')
     
-    X = df[available_features]
-    y = df['future_price_change']  # Target: variazione percentuale futura
+    if len(merged_data) == 0:
+        print("⚠️ Nessuna corrispondenza tra le date dei dati!")
+        print(f"Range sentiment: {daily_data['date'].min()} - {daily_data['date'].max()}")
+        print(f"Range prezzi: {real_prices['date'].min()} - {real_prices['date'].max()}")
+        return None
     
-    # Rimuovi outlier estremi
-    q1, q3 = y.quantile([0.05, 0.95])
-    mask = (y >= q1) & (y <= q3)
-    X, y = X[mask], y[mask]
+    # Calcola variazioni di prezzo
+    merged_data = merged_data.sort_values('date')
+    merged_data['price_change_1d'] = merged_data['price'].pct_change(1)
+    merged_data['price_change_3d'] = merged_data['price'].pct_change(3)
+    merged_data['price_change_7d'] = merged_data['price'].pct_change(7)
     
-    if len(X) < 10:
-        print("Dati insufficienti per il training")
-        return None, df
+    # Target: prezzo futuro (per validazione)
+    merged_data['future_price_1d'] = merged_data['price'].shift(-1)
+    merged_data['future_price_3d'] = merged_data['price'].shift(-3)
+    merged_data['future_price_7d'] = merged_data['price'].shift(-7)
     
-    # Dividi in training e test set
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    # Calcola variazioni future
+    merged_data['future_change_1d'] = (merged_data['future_price_1d'] - merged_data['price']) / merged_data['price']
+    merged_data['future_change_3d'] = (merged_data['future_price_3d'] - merged_data['price']) / merged_data['price']
+    merged_data['future_change_7d'] = (merged_data['future_price_7d'] - merged_data['price']) / merged_data['price']
     
-    # Modello di regressione lineare
-    model = LinearRegression()
-    model.fit(X_train, y_train)
+    # Direzione del prezzo (su/giù)
+    merged_data['future_direction_1d'] = (merged_data['future_change_1d'] > 0).astype(int)
+    merged_data['future_direction_3d'] = (merged_data['future_change_3d'] > 0).astype(int)
+    merged_data['future_direction_7d'] = (merged_data['future_change_7d'] > 0).astype(int)
     
-    # Previsioni
-    y_pred_train = model.predict(X_train)
-    y_pred_test = model.predict(X_test)
+    print(f"Dati uniti: {len(merged_data)} giorni con prezzi e sentiment")
+    return merged_data
+
+def train_prediction_model(data, prediction_horizon='1d'):
+    """Addestra modello di previsione usando TimeSeriesSplit"""
     
-    # Metriche di valutazione
-    train_r2 = r2_score(y_train, y_pred_train)
-    test_r2 = r2_score(y_test, y_pred_test)
-    train_mse = mean_squared_error(y_train, y_pred_train)
-    test_mse = mean_squared_error(y_test, y_pred_test)
+    # Seleziona features e target
+    feature_cols = ['sentiment_mean', 'sentiment_ma_3', 'sentiment_ma_7', 
+                   'tweet_count', 'day_of_week', 'is_weekend']
     
-    print(f"R² Training: {train_r2:.4f}")
-    print(f"R² Test: {test_r2:.4f}")
-    print(f"MSE Training: {train_mse:.6f}")
-    print(f"MSE Test: {test_mse:.6f}")
+    # Rimuovi features con tutti NaN
+    available_features = [col for col in feature_cols if col in data.columns and not data[col].isna().all()]
+    
+    target_col = f'future_change_{prediction_horizon}'
+    direction_col = f'future_direction_{prediction_horizon}'
+    
+    # Prepara dati
+    df_clean = data.dropna(subset=available_features + [target_col])
+    
+    if len(df_clean) < 30:
+        print(f"Dati insufficienti per previsione {prediction_horizon}: {len(df_clean)} giorni")
+        return None, None
+    
+    print(X.shape)
+    print(y_change.shape)
+    
+    X = df_clean[available_features]
+    y_change = df_clean[target_col]  # Variazione percentuale
+    y_direction = df_clean[direction_col]  # Direzione (0/1)
+    
+    # TimeSeriesSplit per validazione temporale corretta
+    tscv = TimeSeriesSplit(n_splits=3)
+    
+    # Metriche di validazione
+    r2_scores = []
+    direction_accuracies = []
+    
+    models = []
+    
+    for train_idx, test_idx in tscv.split(X):
+        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+        y_train, y_test = y_change.iloc[train_idx], y_change.iloc[test_idx]
+        y_dir_train, y_dir_test = y_direction.iloc[train_idx], y_direction.iloc[test_idx]
+        
+        # Modello per variazione percentuale
+        model = LinearRegression()
+        model.fit(X_train, y_train)
+        models.append(model)
+        
+        # Previsioni
+        y_pred = model.predict(X_test)
+        
+        # Metriche
+        r2 = r2_score(y_test, y_pred)
+        r2_scores.append(r2)
+        
+        # Accuratezza direzione
+        direction_pred = (y_pred > 0).astype(int)
+        direction_acc = (direction_pred == y_dir_test).mean()
+        direction_accuracies.append(direction_acc)
+    
+    # Risultati medi
+    avg_r2 = np.mean(r2_scores)
+    avg_direction_acc = np.mean(direction_accuracies)
+    
+    print(f"\n=== Risultati Previsione {prediction_horizon} ===")
+    print(f"R² medio: {avg_r2:.4f}")
+    print(f"Accuratezza direzione: {avg_direction_acc:.4f} ({avg_direction_acc*100:.1f}%)")
+    
+    # Addestra modello finale su tutti i dati
+    final_model = LinearRegression()
+    final_model.fit(X, y_change)
     
     # Feature importance
     feature_importance = pd.DataFrame({
         'feature': available_features,
-        'coefficient': model.coef_
+        'coefficient': final_model.coef_
     }).sort_values('coefficient', key=abs, ascending=False)
     
-    print("\nImportanza delle features:")
+    print("\nImportanza features:")
     print(feature_importance)
     
-    return model, df
+    return final_model, df_clean
 
-def create_visualizations(df):
-    """Crea visualizzazioni dei risultati"""
-    # Usa uno stile matplotlib valido
+def create_visualizations(data):
+    """Crea visualizzazioni complete"""
     plt.style.use('default')
-    sns.set_palette("husl")
     
-    # Figura con subplot multipli
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
     
-    # 1. Prezzo BTC nel tempo
-    axes[0, 0].plot(df['timestamp'], df['btc_price'], label='Prezzo BTC', alpha=0.8, linewidth=1.5)
-    axes[0, 0].set_xlabel("Data")
-    axes[0, 0].set_ylabel("Prezzo BTC (€)")
-    axes[0, 0].set_title("Evoluzione Prezzo Bitcoin")
-    axes[0, 0].tick_params(axis='x', rotation=45)
+    # 1. Prezzo Bitcoin nel tempo
+    axes[0, 0].plot(data['date'], data['price'], linewidth=2, color='orange')
+    axes[0, 0].set_title('Prezzo Bitcoin nel Tempo', fontsize=14, fontweight='bold')
+    axes[0, 0].set_ylabel('Prezzo USD')
     axes[0, 0].grid(True, alpha=0.3)
+    axes[0, 0].tick_params(axis='x', rotation=45)
     
-    # 2. Distribuzione del sentiment
-    if 'sentiment' in df.columns:
-        sentiment_counts = df['sentiment'].value_counts()
-        colors = ['#ff6b6b', '#ffd93d', '#6bcf7f']
-        axes[0, 1].pie(sentiment_counts.values, labels=sentiment_counts.index, 
-                      autopct='%1.1f%%', colors=colors)
-        axes[0, 1].set_title("Distribuzione del Sentiment")
+    # 2. Sentiment medio nel tempo
+    axes[0, 1].plot(data['date'], data['sentiment_mean'], color='green', alpha=0.7)
+    axes[0, 1].plot(data['date'], data['sentiment_ma_7'], color='red', linewidth=2)
+    axes[0, 1].set_title('Sentiment nel Tempo', fontsize=14, fontweight='bold')
+    axes[0, 1].set_ylabel('Sentiment Score')
+    axes[0, 1].legend(['Sentiment Giornaliero', 'Media Mobile 7g'])
+    axes[0, 1].grid(True, alpha=0.3)
+    axes[0, 1].tick_params(axis='x', rotation=45)
     
-    # 3. Sentiment vs Variazione Prezzo
-    if 'sentiment_score' in df.columns and 'price_change_1d' in df.columns:
-        scatter = axes[1, 0].scatter(df['sentiment_score'], df['price_change_1d'], 
-                                   alpha=0.6, c=df['sentiment_score'], cmap='RdYlGn')
-        axes[1, 0].set_xlabel("Sentiment Score")
-        axes[1, 0].set_ylabel("Variazione Prezzo 1g (%)")
-        axes[1, 0].set_title("Sentiment vs Variazione Prezzo")
+    # 3. Correlazione Sentiment vs Variazione Prezzo
+    if 'future_change_1d' in data.columns:
+        valid_data = data.dropna(subset=['sentiment_mean', 'future_change_1d'])
+        scatter = axes[0, 2].scatter(valid_data['sentiment_mean'], valid_data['future_change_1d'], 
+                                   alpha=0.6, c=valid_data['sentiment_mean'], cmap='RdYlGn')
+        axes[0, 2].set_title('Sentiment vs Variazione Prezzo 1g', fontsize=14, fontweight='bold')
+        axes[0, 2].set_xlabel('Sentiment Score')
+        axes[0, 2].set_ylabel('Variazione Prezzo 1g (%)')
+        axes[0, 2].grid(True, alpha=0.3)
+        plt.colorbar(scatter, ax=axes[0, 2])
+    
+    # 4. Distribuzione variazioni prezzo
+    if 'price_change_1d' in data.columns:
+        valid_changes = data['price_change_1d'].dropna()
+        axes[1, 0].hist(valid_changes, bins=30, alpha=0.7, color='skyblue', edgecolor='black')
+        axes[1, 0].set_title('Distribuzione Variazioni Prezzo 1g', fontsize=14, fontweight='bold')
+        axes[1, 0].set_xlabel('Variazione %')
+        axes[1, 0].set_ylabel('Frequenza')
         axes[1, 0].grid(True, alpha=0.3)
-        plt.colorbar(scatter, ax=axes[1, 0])
     
-    # 4. Correlazione tra variabili
-    if len(df.select_dtypes(include=[np.number]).columns) > 1:
-        corr_cols = ['sentiment_score', 'price_change_1d', 'price_change_7d']
-        available_corr_cols = [col for col in corr_cols if col in df.columns]
+    # 5. Volume tweet vs prezzo
+    axes[1, 1].scatter(data['tweet_count'], data['price'], alpha=0.6, color='purple')
+    axes[1, 1].set_title('Volume Tweet vs Prezzo', fontsize=14, fontweight='bold')
+    axes[1, 1].set_xlabel('Numero Tweet')
+    axes[1, 1].set_ylabel('Prezzo USD')
+    axes[1, 1].grid(True, alpha=0.3)
+    
+    # 6. Matrice correlazioni
+    corr_cols = ['sentiment_mean', 'price_change_1d', 'tweet_count', 'price']
+    available_corr_cols = [col for col in corr_cols if col in data.columns]
+    
+    if len(available_corr_cols) > 1:
+        corr_data = data[available_corr_cols].corr()
+        im = axes[1, 2].imshow(corr_data, cmap='coolwarm', aspect='auto', vmin=-1, vmax=1)
+        axes[1, 2].set_xticks(range(len(available_corr_cols)))
+        axes[1, 2].set_yticks(range(len(available_corr_cols)))
+        axes[1, 2].set_xticklabels(available_corr_cols, rotation=45)
+        axes[1, 2].set_yticklabels(available_corr_cols)
+        axes[1, 2].set_title('Matrice Correlazioni', fontsize=14, fontweight='bold')
         
-        if len(available_corr_cols) > 1:
-            corr_matrix = df[available_corr_cols].corr()
-            sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', center=0,
-                       ax=axes[1, 1], square=True)
-            axes[1, 1].set_title("Matrice di Correlazione")
+        # Aggiungi valori nella matrice
+        for i in range(len(available_corr_cols)):
+            for j in range(len(available_corr_cols)):
+                axes[1, 2].text(j, i, f'{corr_data.iloc[i, j]:.2f}', 
+                               ha='center', va='center', fontweight='bold')
+        
+        plt.colorbar(im, ax=axes[1, 2])
     
     plt.tight_layout()
     plt.show()
     
-    # Analisi correlazioni
-    if 'sentiment_score' in df.columns and 'future_direction' in df.columns:
-        correlation = df['sentiment_score'].corr(df['future_direction'])
-        print(f"\nCorrelazione sentiment-direzione prezzo: {correlation:.4f}")
+    # Statistiche finali
+    print("\n=== STATISTICHE FINALI ===")
+    if 'sentiment_mean' in data.columns and 'future_change_1d' in data.columns:
+        correlation = data['sentiment_mean'].corr(data['future_change_1d'])
+        print(f"Correlazione sentiment-variazione prezzo 1g: {correlation:.4f}")
     
-    # Statistiche descrittive
-    print("\nStatistiche descrittive:")
-    numeric_cols = df.select_dtypes(include=[np.number]).columns
-    print(df[numeric_cols].describe())
+    print(f"Periodo analizzato: {data['date'].min()} - {data['date'].max()}")
+    print(f"Giorni totali: {len(data)}")
+    print(f"Tweet totali: {data['tweet_count'].sum()}")
 
 def main():
-    """Funzione principale"""
-    print("=== Analisi Sentiment e Previsione Prezzo Bitcoin ===\n")
+    """Funzione principale con validazione temporale corretta"""
+    print("=== ANALISI BITCOIN CON PREZZI REALI ===\n")
     
-    # 1. Carica e pulisce i dati
+    # 1. Carica dataset sentiment
+    print("1. Caricamento dataset...")
     df = load_and_clean_data("Dataset tesi.csv")
     if df is None:
-        print("Impossibile caricare il dataset. Controlla il file e riprova.")
         return
     
-    # 2. Analisi del sentiment
+    # 2. Analisi sentiment
+    print("\n2. Analisi sentiment...")
     df = perform_sentiment_analysis(df)
     
-    # 3. Crea features per la previsione
-    df = create_prediction_features(df, horizon_days=10)
+    # 3. Aggrega dati per giorno
+    print("\n3. Aggregazione dati giornalieri...")
+    daily_data = create_daily_features(df)
     
-    # 4. Addestra il modello
-    model, df = train_regression_model(df)
+    # 4. Scarica prezzi Bitcoin reali
+    print("\n4. Download prezzi Bitcoin reali...")
+    start_date = daily_data['date'].min() - timedelta(days=10)
+    end_date = daily_data['date'].max() + timedelta(days=10)
     
-    # 5. Crea visualizzazioni
-    create_visualizations(df)
+    real_prices = download_bitcoin_prices(start_date, end_date)
+    if real_prices is None:
+        print("Impossibile scaricare i prezzi. Verifica la connessione internet.")
+        return
     
-    # 6. Salva risultati
+    # 5. Unisci dati
+    print("\n5. Unione dati sentiment e prezzi...")
+    merged_data = merge_with_real_prices(daily_data, real_prices)
+    if merged_data is None:
+        return
+    
+    # 6. Addestra modelli di previsione
+    print("\n6. Training modelli di previsione...")
+    
+    # Modello 1 giorno
+    model_1d, data_1d = train_prediction_model(merged_data, '1d')
+    
+    # Modello 3 giorni
+    model_3d, data_3d = train_prediction_model(merged_data, '3d')
+    
+    # Modello 7 giorni  
+    model_7d, data_7d = train_prediction_model(merged_data, '7d')
+    
+    # 7. Visualizzazioni
+    print("\n7. Creazione visualizzazioni...")
+    create_visualizations(merged_data)
+    
+    # 8. Salva risultati
+    print("\n8. Salvataggio risultati...")
     try:
-        output_file = "risultati_analisi.csv"
-        df.to_csv(output_file, index=False, encoding='utf-8')
-        print(f"\nRisultati salvati in '{output_file}'")
+        merged_data.to_csv("risultati_analisi_completa.csv", index=False)
+        print("✓ Risultati salvati in 'risultati_analisi_completa.csv'")
     except Exception as e:
-        print(f"Errore nel salvataggio: {e}")
+        print(f"Errore salvataggio: {e}")
     
-    print("\n=== Analisi completata ===")
+    print("\n=== ANALISI COMPLETATA ===")
+    print("Il modello ora usa i prezzi REALI di Bitcoin per validare le previsioni!")
 
 if __name__ == "__main__":
     main()
