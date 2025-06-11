@@ -1,0 +1,7 @@
+pandas
+tweetnlp
+scikit-learn
+matplotlib
+numpy
+seaborn
+hf_xet
