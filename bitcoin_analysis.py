@@ -224,9 +224,6 @@ def train_prediction_model(data, prediction_horizon='1d'):
         print(f"Dati insufficienti per previsione {prediction_horizon}: {len(df_clean)} giorni")
         return None, None
     
-    print(X.shape)
-    print(y_change.shape)
-    
     X = df_clean[available_features]
     y_change = df_clean[target_col]  # Variazione percentuale
     y_direction = df_clean[direction_col]  # Direzione (0/1)
