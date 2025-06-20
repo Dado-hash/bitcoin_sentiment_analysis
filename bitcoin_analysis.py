@@ -180,26 +180,32 @@ def merge_with_real_prices(daily_data, real_prices):
         print(f"Range prezzi: {real_prices['date'].min()} - {real_prices['date'].max()}")
         return None
     
-    # Calcola variazioni di prezzo
+    # Calcola variazioni di prezzo passate
     merged_data = merged_data.sort_values('date')
     merged_data['price_change_1d'] = merged_data['price'].pct_change(1)
     merged_data['price_change_3d'] = merged_data['price'].pct_change(3)
     merged_data['price_change_7d'] = merged_data['price'].pct_change(7)
     
-    # Target: prezzo futuro (per validazione)
+    # Target: prezzo futuro (per validazione) - AGGIUNTO 14 e 30 giorni
     merged_data['future_price_1d'] = merged_data['price'].shift(-1)
     merged_data['future_price_3d'] = merged_data['price'].shift(-3)
     merged_data['future_price_7d'] = merged_data['price'].shift(-7)
+    merged_data['future_price_14d'] = merged_data['price'].shift(-14)  # NUOVO
+    merged_data['future_price_30d'] = merged_data['price'].shift(-30)  # NUOVO
     
-    # Calcola variazioni future
+    # Calcola variazioni future - AGGIUNTO 14 e 30 giorni
     merged_data['future_change_1d'] = (merged_data['future_price_1d'] - merged_data['price']) / merged_data['price']
     merged_data['future_change_3d'] = (merged_data['future_price_3d'] - merged_data['price']) / merged_data['price']
     merged_data['future_change_7d'] = (merged_data['future_price_7d'] - merged_data['price']) / merged_data['price']
+    merged_data['future_change_14d'] = (merged_data['future_price_14d'] - merged_data['price']) / merged_data['price']  # NUOVO
+    merged_data['future_change_30d'] = (merged_data['future_price_30d'] - merged_data['price']) / merged_data['price']  # NUOVO
     
-    # Direzione del prezzo (su/giù)
+    # Direzione del prezzo (su/giù) - AGGIUNTO 14 e 30 giorni
     merged_data['future_direction_1d'] = (merged_data['future_change_1d'] > 0).astype(int)
     merged_data['future_direction_3d'] = (merged_data['future_change_3d'] > 0).astype(int)
     merged_data['future_direction_7d'] = (merged_data['future_change_7d'] > 0).astype(int)
+    merged_data['future_direction_14d'] = (merged_data['future_change_14d'] > 0).astype(int)  # NUOVO
+    merged_data['future_direction_30d'] = (merged_data['future_change_30d'] > 0).astype(int)  # NUOVO
     
     print(f"Dati uniti: {len(merged_data)} giorni con prezzi e sentiment")
     return merged_data
@@ -283,10 +289,11 @@ def train_prediction_model(data, prediction_horizon='1d'):
     return final_model, df_clean
 
 def create_visualizations(data):
-    """Crea visualizzazioni complete"""
+    """Crea visualizzazioni complete - MODIFICATO per i nuovi orizzonti temporali"""
     plt.style.use('default')
     
-    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    # MODIFICATO: cambiato layout a 2x3 per i nuovi grafici
+    fig, axes = plt.subplots(2, 3, figsize=(20, 12))
     
     # 1. Prezzo Bitcoin nel tempo
     axes[0, 0].plot(data['date'], data['price'], linewidth=2, color='orange')
@@ -304,7 +311,7 @@ def create_visualizations(data):
     axes[0, 1].grid(True, alpha=0.3)
     axes[0, 1].tick_params(axis='x', rotation=45)
     
-    # 3. Correlazione Sentiment vs Variazione Prezzo
+    # 3. Correlazione Sentiment vs Variazione Prezzo 1d
     if 'future_change_1d' in data.columns:
         valid_data = data.dropna(subset=['sentiment_mean', 'future_change_1d'])
         scatter = axes[0, 2].scatter(valid_data['sentiment_mean'], valid_data['future_change_1d'], 
@@ -315,59 +322,80 @@ def create_visualizations(data):
         axes[0, 2].grid(True, alpha=0.3)
         plt.colorbar(scatter, ax=axes[0, 2])
     
-    # 4. Distribuzione variazioni prezzo
-    if 'price_change_1d' in data.columns:
-        valid_changes = data['price_change_1d'].dropna()
-        axes[1, 0].hist(valid_changes, bins=30, alpha=0.7, color='skyblue', edgecolor='black')
-        axes[1, 0].set_title('Distribuzione Variazioni Prezzo 1g', fontsize=14, fontweight='bold')
-        axes[1, 0].set_xlabel('Variazione %')
-        axes[1, 0].set_ylabel('Frequenza')
+    # 4. NUOVO: Correlazione Sentiment vs Variazione Prezzo 7d
+    if 'future_change_7d' in data.columns:
+        valid_data = data.dropna(subset=['sentiment_mean', 'future_change_7d'])
+        scatter = axes[1, 0].scatter(valid_data['sentiment_mean'], valid_data['future_change_7d'], 
+                                   alpha=0.6, c=valid_data['sentiment_mean'], cmap='RdYlGn')
+        axes[1, 0].set_title('Sentiment vs Variazione Prezzo 7g', fontsize=14, fontweight='bold')
+        axes[1, 0].set_xlabel('Sentiment Score')
+        axes[1, 0].set_ylabel('Variazione Prezzo 7g (%)')
         axes[1, 0].grid(True, alpha=0.3)
+        plt.colorbar(scatter, ax=axes[1, 0])
     
-    # 5. Volume tweet vs prezzo
-    axes[1, 1].scatter(data['tweet_count'], data['price'], alpha=0.6, color='purple')
-    axes[1, 1].set_title('Volume Tweet vs Prezzo', fontsize=14, fontweight='bold')
-    axes[1, 1].set_xlabel('Numero Tweet')
-    axes[1, 1].set_ylabel('Prezzo USD')
-    axes[1, 1].grid(True, alpha=0.3)
+    # 5. NUOVO: Correlazione Sentiment vs Variazione Prezzo 14d
+    if 'future_change_14d' in data.columns:
+        valid_data = data.dropna(subset=['sentiment_mean', 'future_change_14d'])
+        scatter = axes[1, 1].scatter(valid_data['sentiment_mean'], valid_data['future_change_14d'], 
+                                   alpha=0.6, c=valid_data['sentiment_mean'], cmap='RdYlGn')
+        axes[1, 1].set_title('Sentiment vs Variazione Prezzo 14g', fontsize=14, fontweight='bold')
+        axes[1, 1].set_xlabel('Sentiment Score')
+        axes[1, 1].set_ylabel('Variazione Prezzo 14g (%)')
+        axes[1, 1].grid(True, alpha=0.3)
+        plt.colorbar(scatter, ax=axes[1, 1])
     
-    # 6. Matrice correlazioni
-    corr_cols = ['sentiment_mean', 'price_change_1d', 'tweet_count', 'price']
-    available_corr_cols = [col for col in corr_cols if col in data.columns]
-    
-    if len(available_corr_cols) > 1:
-        corr_data = data[available_corr_cols].corr()
-        im = axes[1, 2].imshow(corr_data, cmap='coolwarm', aspect='auto', vmin=-1, vmax=1)
-        axes[1, 2].set_xticks(range(len(available_corr_cols)))
-        axes[1, 2].set_yticks(range(len(available_corr_cols)))
-        axes[1, 2].set_xticklabels(available_corr_cols, rotation=45)
-        axes[1, 2].set_yticklabels(available_corr_cols)
-        axes[1, 2].set_title('Matrice Correlazioni', fontsize=14, fontweight='bold')
-        
-        # Aggiungi valori nella matrice
-        for i in range(len(available_corr_cols)):
-            for j in range(len(available_corr_cols)):
-                axes[1, 2].text(j, i, f'{corr_data.iloc[i, j]:.2f}', 
-                               ha='center', va='center', fontweight='bold')
-        
-        plt.colorbar(im, ax=axes[1, 2])
+    # 6. NUOVO: Correlazione Sentiment vs Variazione Prezzo 30d
+    if 'future_change_30d' in data.columns:
+        valid_data = data.dropna(subset=['sentiment_mean', 'future_change_30d'])
+        scatter = axes[1, 2].scatter(valid_data['sentiment_mean'], valid_data['future_change_30d'], 
+                                   alpha=0.6, c=valid_data['sentiment_mean'], cmap='RdYlGn')
+        axes[1, 2].set_title('Sentiment vs Variazione Prezzo 30g', fontsize=14, fontweight='bold')
+        axes[1, 2].set_xlabel('Sentiment Score')
+        axes[1, 2].set_ylabel('Variazione Prezzo 30g (%)')
+        axes[1, 2].grid(True, alpha=0.3)
+        plt.colorbar(scatter, ax=axes[1, 2])
     
     plt.tight_layout()
     plt.show()
     
-    # Statistiche finali
-    print("\n=== STATISTICHE FINALI ===")
-    if 'sentiment_mean' in data.columns and 'future_change_1d' in data.columns:
-        correlation = data['sentiment_mean'].corr(data['future_change_1d'])
-        print(f"Correlazione sentiment-variazione prezzo 1g: {correlation:.4f}")
+    # NUOVO: Grafico separato per matrice correlazioni ESTESA
+    plt.figure(figsize=(12, 8))
     
-    print(f"Periodo analizzato: {data['date'].min()} - {data['date'].max()}")
+    corr_cols = ['sentiment_mean', 'price_change_1d', 'future_change_1d', 'future_change_7d', 
+                'future_change_14d', 'future_change_30d', 'tweet_count', 'price']
+    available_corr_cols = [col for col in corr_cols if col in data.columns]
+    
+    if len(available_corr_cols) > 1:
+        corr_data = data[available_corr_cols].corr()
+        
+        # Crea heatmap
+        mask = np.triu(np.ones_like(corr_data, dtype=bool))
+        sns.heatmap(corr_data, mask=mask, annot=True, cmap='coolwarm', center=0,
+                   square=True, linewidths=0.5, cbar_kws={"shrink": .8}, fmt='.3f')
+        plt.title('Matrice Correlazioni Estesa', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        plt.show()
+    
+    # Statistiche finali ESTESE
+    print("\n=== STATISTICHE CORRELAZIONI ESTESE ===")
+    correlations = {}
+    
+    for horizon in ['1d', '7d', '14d', '30d']:
+        future_col = f'future_change_{horizon}'
+        if 'sentiment_mean' in data.columns and future_col in data.columns:
+            correlation = data['sentiment_mean'].corr(data[future_col])
+            correlations[horizon] = correlation
+            print(f"Correlazione sentiment-variazione prezzo {horizon}: {correlation:.4f}")
+    
+    print(f"\nPeriodo analizzato: {data['date'].min()} - {data['date'].max()}")
     print(f"Giorni totali: {len(data)}")
     print(f"Tweet totali: {data['tweet_count'].sum()}")
+    
+    return correlations
 
 def main():
     """Funzione principale con validazione temporale corretta"""
-    print("=== ANALISI BITCOIN CON PREZZI REALI ===\n")
+    print("=== ANALISI BITCOIN ESTESA CON ORIZZONTI MULTIPLI ===\n")
     
     # 1. Carica dataset sentiment
     print("1. Caricamento dataset...")
@@ -385,8 +413,8 @@ def main():
     
     # 4. Scarica prezzi Bitcoin reali
     print("\n4. Download prezzi Bitcoin reali...")
-    start_date = daily_data['date'].min() - timedelta(days=10)
-    end_date = daily_data['date'].max() + timedelta(days=10)
+    start_date = daily_data['date'].min() - timedelta(days=35)  # MODIFICATO: +35 giorni per 30d horizon
+    end_date = daily_data['date'].max() + timedelta(days=35)
     
     real_prices = download_bitcoin_prices(start_date, end_date)
     if real_prices is None:
@@ -399,32 +427,47 @@ def main():
     if merged_data is None:
         return
     
-    # 6. Addestra modelli di previsione
-    print("\n6. Training modelli di previsione...")
+    # 6. Addestra modelli di previsione - ESTESO
+    print("\n6. Training modelli di previsione per tutti gli orizzonti...")
+    
+    models = {}
     
     # Modello 1 giorno
-    model_1d, data_1d = train_prediction_model(merged_data, '1d')
+    models['1d'], _ = train_prediction_model(merged_data, '1d')
     
     # Modello 3 giorni
-    model_3d, data_3d = train_prediction_model(merged_data, '3d')
+    models['3d'], _ = train_prediction_model(merged_data, '3d')
     
     # Modello 7 giorni  
-    model_7d, data_7d = train_prediction_model(merged_data, '7d')
+    models['7d'], _ = train_prediction_model(merged_data, '7d')
+    
+    # NUOVO: Modello 14 giorni
+    models['14d'], _ = train_prediction_model(merged_data, '14d')
+    
+    # NUOVO: Modello 30 giorni
+    models['30d'], _ = train_prediction_model(merged_data, '30d')
     
     # 7. Visualizzazioni
     print("\n7. Creazione visualizzazioni...")
-    create_visualizations(merged_data)
+    correlations = create_visualizations(merged_data)
     
     # 8. Salva risultati
     print("\n8. Salvataggio risultati...")
     try:
-        merged_data.to_csv("risultati_analisi_completa.csv", index=False)
-        print("✓ Risultati salvati in 'risultati_analisi_completa.csv'")
+        merged_data.to_csv("risultati_analisi_estesa.csv", index=False)
+        print("✓ Risultati salvati in 'risultati_analisi_estesa.csv'")
+        
+        # Salva anche le correlazioni
+        corr_df = pd.DataFrame(list(correlations.items()), columns=['Orizzonte', 'Correlazione'])
+        corr_df.to_csv("correlazioni_sentiment_prezzo.csv", index=False)
+        print("✓ Correlazioni salvate in 'correlazioni_sentiment_prezzo.csv'")
+        
     except Exception as e:
         print(f"Errore salvataggio: {e}")
     
-    print("\n=== ANALISI COMPLETATA ===")
-    print("Il modello ora usa i prezzi REALI di Bitcoin per validare le previsioni!")
+    print("\n=== ANALISI ESTESA COMPLETATA ===")
+    print("L'analisi ora include orizzonti temporali di 1, 3, 7, 14 e 30 giorni!")
+    print("I grafici mostrano le correlazioni per diversi orizzonti temporali.")
 
 if __name__ == "__main__":
     main()
